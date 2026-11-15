@@ -10,7 +10,7 @@ $oldLocation = Get-Location
 $sandbox = Join-Path ([IO.Path]::GetTempPath()) "vsrun-test-$([guid]::NewGuid().ToString('N').Substring(0, 8))"
 $failures = 0
 $checks = 0
-$expectedChecks = 27
+$expectedChecks = 37
 function Check([string]$what, [bool]$ok) {
     $script:checks++
     if ($ok) { Write-Host "PASS  $what" -ForegroundColor Green }
@@ -64,6 +64,7 @@ try {
     $declared = [regex]::Match($src, '\$VsrunVersion\s*=\s*''([^'']+)''').Groups[1].Value
     $ver = (vsrun -Version *>&1 | Out-String).Trim()
     Check 'version equals vsrun + declared version' ($declared -ne '' -and $ver -eq "vsrun $declared")
+    Check '-v prints the same version' (((vsrun -v *>&1 | Out-String).Trim()) -eq "vsrun $declared")
 
     # --- workspace file
     $r = Run { vsrun -m:s,h }
@@ -89,6 +90,24 @@ try {
     Check 'no selector' ((TaskArgs (Run { vsrun })) -eq '')
     $again = Run { vsrun -m:f }
     Check 'same folder reuses the same workspace file' ($again.File -eq $r.File)
+
+    # --- -d inner folder
+    $inner = Join-Path $proj 'dir1\dir2'
+    New-Item -ItemType Directory $inner | Out-Null
+    foreach ($form in 'dir1\dir2', 'dir1\dir2\', '.\dir1\dir2') {
+        $d = Run { vsrun -m:f,m "-d:$form" }
+        Check "-d:$form sets cwd to inner, workspace stays project" ($d.Json.tasks.tasks[0].options.cwd -eq $inner -and $d.Json.folders[0].path -eq $proj -and (TaskArgs $d) -eq '-m f,m')
+    }
+    Check '-d before -m, space form' ((Run { vsrun -d dir1\dir2 -m f,m }).Json.tasks.tasks[0].options.cwd -eq $inner)
+    Check '-d only, no selector' ((TaskArgs (Run { vsrun -d:dir1 })) -eq '')
+    Check '-d with extra args' ((TaskArgs (Run { vsrun -d:dir1 --resume })) -eq '--resume')
+    $x = Reject { vsrun -d:nope }
+    Check '-d missing folder exits 1, no code' ($x.Code -eq 1 -and -not $x.Started)
+    $x = Reject { vsrun -d:.. }
+    Check '-d outside project exits 1, no code' ($x.Code -eq 1 -and -not $x.Started)
+    $x = Reject { vsrun -d:dir1 -d:dir1 }
+    Check 'duplicate -d exits 1, no code' ($x.Code -eq 1 -and -not $x.Started)
+    Remove-Item (Join-Path $proj 'dir1') -Recurse -Force
 
     # --- the generated task really reaches claude through ccli
     $rec = Join-Path $sandbox 'claude.txt'
